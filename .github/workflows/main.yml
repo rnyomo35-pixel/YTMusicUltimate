@@ -143,8 +143,65 @@ jobs:
 
       - name: Inject tweak into provided IPA
         run: |
-          cyan -i ytm.ipa -o YTMusicUltimate.ipa -uwsf ytmult.deb \
-               -n "${{ inputs.display_name }}" -b "${{ inputs.bundle_id }}"
+          set -e
+          TWEAKED=0
+          if python3 - <<'PY'
+          import sys, zipfile
+          d = zipfile.ZipFile('ytm.ipa').read('Payload/YouTubeMusic.app/YouTubeMusic')
+          sys.exit(0 if b'@rpath/YTMusicUltimate.dylib' in d else 1)
+          PY
+          then TWEAKED=1; fi
+
+          if [ "$TWEAKED" = "1" ]; then
+            echo "base is already tweaked -> replacing dylib/bundle in place (keeps a single load command)"
+            python3 - <<'PY'
+          import os, shutil, subprocess, tempfile, zipfile
+
+          ipa, deb, out = 'ytm.ipa', 'ytmult.deb', 'YTMusicUltimate.ipa'
+          app = 'Payload/YouTubeMusic.app/'
+          tmp = tempfile.mkdtemp()
+          subprocess.run(['dpkg-deb', '-x', deb, tmp], check=True)
+
+          dylibs = [os.path.join(r, f) for r, _, fs in os.walk(tmp) for f in fs if f.endswith('.dylib')]
+          if not dylibs:
+              raise SystemExit('no dylib inside the deb')
+          targets = {app + 'Frameworks/' + os.path.basename(dylibs[0]): open(dylibs[0], 'rb').read()}
+
+          bundle = os.path.join(tmp, 'Library/Application Support/YTMusicUltimate.bundle')
+          if os.path.isdir(bundle):
+              for root, _, files in os.walk(bundle):
+                  for f in files:
+                      full = os.path.join(root, f)
+                      rel = os.path.relpath(full, bundle).replace(os.sep, '/')
+                      targets[app + 'YTMusicUltimate.bundle/' + rel] = open(full, 'rb').read()
+
+          zin = zipfile.ZipFile(ipa)
+          replaced = 0
+          added = 0
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zout:
+              for n in zin.namelist():
+                  zi = zin.getinfo(n)
+                  data = targets.pop(n, None)
+                  if data is not None:
+                      replaced += 1
+                  else:
+                      data = zin.read(n)
+                  ni = zipfile.ZipInfo(n, date_time=zi.date_time)
+                  ni.compress_type = zipfile.ZIP_DEFLATED
+                  ni.external_attr = zi.external_attr
+                  zout.writestr(ni, data)
+              for n, data in targets.items():
+                  ni = zipfile.ZipInfo(n, date_time=(2026, 1, 1, 0, 0, 0))
+                  ni.compress_type = zipfile.ZIP_DEFLATED
+                  zout.writestr(ni, data)
+                  added += 1
+          print(f'in-place replace done: {replaced} replaced, {added} added')
+          PY
+          else
+            echo "clean base -> cyan injection"
+            cyan -i ytm.ipa -o YTMusicUltimate.ipa -uwsf ytmult.deb \
+                 -n "${{ inputs.display_name }}" -b "${{ inputs.bundle_id }}"
+          fi
           ls -l YTMusicUltimate.ipa
 
       - name: Verify injected IPA
@@ -162,6 +219,11 @@ jobs:
           b = z.read(dyl[0])
           magic = struct.unpack_from('<I', b, 0)[0]
           print('dylib magic:', hex(magic), 'size:', len(b))
+          exe = z.read('Payload/YouTubeMusic.app/YouTubeMusic')
+          n = exe.count(b'@rpath/YTMusicUltimate.dylib')
+          print('dylib load command occurrences:', n)
+          if n != 1:
+              raise SystemExit(f'expected exactly 1 load command, found {n}')
           PY
           unzip -p YTMusicUltimate.ipa "Payload/*/Info.plist" > /tmp/Info.plist
           grep -a -o "com\.google\.ios\.youtubemusic" /tmp/Info.plist | head -1 || true
