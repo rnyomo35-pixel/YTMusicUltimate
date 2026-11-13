@@ -3,9 +3,15 @@ on:
   workflow_dispatch:
     inputs: 
       ipa_url:
-        description: "URL to the decrypted IPA file"
+        description: "URL to the decrypted IPA file (or leave empty and use ipa_asset)"
         default: ""
-        required: true
+        required: false
+        type: string
+
+      ipa_asset:
+        description: "GitHub API URL of a draft-release asset in this repo holding the base IPA"
+        default: ""
+        required: false
         type: string
 
       display_name:
@@ -42,17 +48,6 @@ jobs:
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
           exclude_inputs: bundle_id,display_name
-
-      - name: Validate IPA URL
-        run: |
-          curl -L -r 0-1023 -o sample.part "${{ inputs.ipa_url }}" > /dev/null 2>&1
-          
-          file_type=$(file --mime-type -b sample.part)
-
-          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-            echo "::error::Validation failed: The file is not a valid IPA file. Detected type: $file_type."
-            exit 1
-          fi
 
       - name: Install Dependencies
         run: brew install make ldid
@@ -93,8 +88,28 @@ jobs:
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-      - name: Download YouTube Music
-        run: wget "${{ inputs.ipa_url }}" --no-verbose -O ytm.ipa
+      - name: Fetch base IPA
+        env:
+          ASSET_URL: ${{ inputs.ipa_asset }}
+        run: |
+          if [ -n "$ASSET_URL" ]; then
+            echo "downloading base from repo asset"
+            curl -fsSL -H "Authorization: token ${{ github.token }}"                         -H "Accept: application/octet-stream"                         "$ASSET_URL" -o ytm.ipa
+          else
+            wget "${{ inputs.ipa_url }}" --no-verbose -O ytm.ipa
+          fi
+
+      - name: Validate base IPA
+        run: |
+          ls -l ytm.ipa
+          t=$(file --mime-type -b ytm.ipa)
+          echo "detected: $t"
+          case "$t" in
+            application/zip|application/x-ios-app) ;;
+            *) echo "::error::not an IPA: $t"; exit 1 ;;
+          esac
+          unzip -l ytm.ipa | grep -qE "Payload/[^/]+\.app/" || { echo "::error::no Payload/*.app in zip"; exit 1; }
+          echo "base IPA looks valid"
 
       - name: Build Tweak for Sideloading
         run: |
