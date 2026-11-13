@@ -2,11 +2,23 @@ name: runner probe
 on:
   workflow_dispatch:
 jobs:
-  macos:
-    runs-on: macos-latest
-    steps:
-      - run: sw_vers && uname -m
-  ubuntu:
+  ubuntu-tools:
     runs-on: ubuntu-latest
     steps:
-      - run: uname -a
+      - name: ldid apt-bol
+        run: |
+          sudo apt-get update -qq
+          apt-cache policy ldid | head -6 || true
+          echo "--- dpkg-dev ---"
+          dpkg -l dpkg-dev 2>/dev/null | tail -1
+      - name: pyzule telepites
+        run: |
+          python3 -m pip install --break-system-packages -q "https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip" 2>&1 | tail -6
+          echo "--- cyan --help ---"
+          cyan --help 2>&1 | head -25 || true
+      - name: ldid forrasbol
+        run: |
+          sudo apt-get install -y -qq git build-essential pkg-config libplist-dev libssl-dev libxml2-dev zlib1g-dev >/dev/null 2>&1 || true
+          git clone -q --depth=1 https://github.com/ProcursusTeam/ldid /tmp/ldbuild 2>&1 | tail -2
+          make -C /tmp/ldbuild -j"$(nproc)" 2>&1 | tail -5
+          /tmp/ldbuild/ldid -h 2>&1 | head -3 || true
